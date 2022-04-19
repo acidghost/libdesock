@@ -1,14 +1,18 @@
 #define _GNU_SOURCE
 #define __USE_GNU
-#include <unistd.h>
-#include <sys/socket.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
-#include <syscall.h>
 #include <desock.h>
 #include <peekbuffer.h>
+#include <syscall.h>
+
+#ifdef NYX_MODE
+#include <nyx.h>
+#endif /* NYX_MODE */
 
 static long internal_readv (struct iovec* iov, int len, int* full, int peek, int offset) {
     int read_in = 0;
@@ -17,6 +21,77 @@ static long internal_readv (struct iovec* iov, int len, int* full, int peek, int
         *full = 1;
     }
 
+#ifdef NYX_MODE
+    static char data_buffer[(1 << 14)];
+
+    if (peek) {
+        for (int i = 0; i < len; ++i) {
+            int r = peekbuffer_cp (iov[i].iov_base, iov[i].iov_len, offset);
+            offset += r;
+
+            read_in += r;
+
+            if (r < iov[i].iov_len) {
+                if (full) {
+                    *full = 0;
+                }
+
+                break;
+            }
+        }
+    } else {
+        size_t total_length = 0;
+        for (int i = 0; i < len; ++i) {
+            total_length += iov[i].iov_len;
+        }
+
+        int i = 0, peek_offset = 0;
+        if (peekbuffer_size () > 0) {
+            for (i = 0; i < len; ++i) {
+                peek_offset = peekbuffer_mv (iov[i].iov_base, iov[i].iov_len);
+                read_in += peek_offset;
+                if (peek_offset < iov[i].iov_len) {
+                    if (full) {
+                        *full = 0;
+                    }
+                    break;
+                }
+            }
+        }
+
+        ssize_t rem_len = total_length - read_in;
+        if (rem_len > 0) {
+            if (full) {
+                *full = 1;
+            }
+
+            int to_copy_len = handle_next_packet (data_buffer, rem_len);
+            size_t offset = 0;
+
+            for (; i < len; ++i) {
+                char* base = ((char*) iov[i].iov_base) + peek_offset;
+                size_t iov_len = iov[i].iov_len - peek_offset;
+                if (to_copy_len <= iov_len) {
+                    memcpy (base, data_buffer + offset, to_copy_len);
+                    DEBUG_LOG ("%s: done copying iovec %d\n", __func__, i);
+                    offset += to_copy_len;
+                    if (full) {
+                        *full = to_copy_len == iov_len;
+                    }
+                    break;
+                }
+                memcpy (base, data_buffer + offset, iov_len);
+                DEBUG_LOG ("%s: done copying iovec %d\n", __func__, i);
+                to_copy_len -= iov_len;
+                offset += iov_len;
+                peek_offset = 0;
+            }
+
+            read_in += offset;
+        }
+    }
+
+#else  /* ! NYX_MODE */
     for (int i = 0; i < len; ++i) {
         int r = 0;
 
@@ -30,7 +105,7 @@ static long internal_readv (struct iovec* iov, int len, int* full, int peek, int
 
             if (r < iov[i].iov_len) {
                 errno = 0;
-                r += syscall_cp (SYS_read, 0, (char *) iov[i].iov_base + r, iov[i].iov_len - r);
+                r += syscall_cp (SYS_read, 0, (char*) iov[i].iov_base + r, iov[i].iov_len - r);
 
                 if (errno) {
                     return -1;
@@ -48,6 +123,7 @@ static long internal_readv (struct iovec* iov, int len, int* full, int peek, int
             break;
         }
     }
+#endif /* ! NYX_MODE */
 
     return read_in;
 }
@@ -63,13 +139,17 @@ ssize_t read (int fd, void* buf, size_t count) {
         }
 
         if (offset < count) {
+#ifdef NYX_MODE
+            offset += handle_next_packet ((char*) buf + offset, count - offset);
+#else  /* ! NYX_MODE */
             errno = 0;
-            offset += syscall_cp (SYS_read, 0, (char *) buf + offset, count - offset);
+            offset += syscall_cp (SYS_read, 0, (char*) buf + offset, count - offset);
 
             if (errno) {
                 DEBUG_LOG (" = -1\n");
                 return -1;
             }
+#endif /* ! NYX_MODE */
         }
 
         DEBUG_LOG (" = %d\n", offset);
@@ -96,20 +176,26 @@ static ssize_t internal_recv (int fd, char* buf, size_t len, int flags) {
     }
 
     if (offset < len) {
+#ifdef NYX_MODE
+        offset += handle_next_packet (buf + offset, len - offset);
+#else  /* ! NYX_MODE */
         errno = 0;
         offset += (syscall_cp (SYS_read, 0, buf + offset, len - offset));
 
         if (errno) {
             return -1;
         }
+#endif /* ! NYX_MODE */
     }
 
     return offset;
 }
 
-ssize_t recvfrom (int fd, void* buf, size_t len, int flags, struct sockaddr* restrict addr, socklen_t * alen) {
+ssize_t recvfrom (int fd, void* buf, size_t len, int flags, struct sockaddr* restrict addr,
+                  socklen_t* alen) {
     if (VALID_FD (fd) && fd_table[fd].desock) {
-        DEBUG_LOG ("[%d] desock::recvfrom(%d, %p, %lu, %d, %p, %p)", gettid (), fd, buf, len, flags, addr, alen);
+        DEBUG_LOG ("[%d] desock::recvfrom(%d, %p, %lu, %d, %p, %p)", gettid (), fd, buf, len, flags,
+                   addr, alen);
 
         fill_sockaddr (fd, addr, alen);
 
@@ -162,9 +248,11 @@ ssize_t recvmsg (int fd, struct msghdr* msg, int flags) {
     }
 }
 
-int recvmmsg (int fd, struct mmsghdr* msgvec, unsigned int vlen, int flags, struct timespec* timeout) {
+int recvmmsg (int fd, struct mmsghdr* msgvec, unsigned int vlen, int flags,
+              struct timespec* timeout) {
     if (VALID_FD (fd) && fd_table[fd].desock) {
-        DEBUG_LOG ("[%d] desock::recvmmsg(%d, %p, %d, %d, %p)", gettid (), fd, msgvec, vlen, flags, timeout);
+        DEBUG_LOG ("[%d] desock::recvmmsg(%d, %p, %d, %d, %p)", gettid (), fd, msgvec, vlen, flags,
+                   timeout);
 
         int i;
         int offset = 0;
@@ -193,7 +281,9 @@ int recvmmsg (int fd, struct mmsghdr* msgvec, unsigned int vlen, int flags, stru
 
             fill_sockaddr (fd, msgvec[i].msg_hdr.msg_name, &msgvec[i].msg_hdr.msg_namelen);
 
-            msgvec[i].msg_len = internal_readv (msgvec[i].msg_hdr.msg_iov, msgvec[i].msg_hdr.msg_iovlen, &full, flags & MSG_PEEK, offset);
+            msgvec[i].msg_len =
+                internal_readv (msgvec[i].msg_hdr.msg_iov, msgvec[i].msg_hdr.msg_iovlen, &full,
+                                flags & MSG_PEEK, offset);
 
             if (msgvec[i].msg_len == -1) {
                 DEBUG_LOG (" = -1\n");

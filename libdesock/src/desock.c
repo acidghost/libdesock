@@ -53,7 +53,7 @@ void fill_sockaddr (int fd, struct sockaddr* addr, socklen_t * addr_len) {
     }
 }
 
-#ifdef DEBUG
+#if defined(DEBUG) && !defined(NYX_MODE)
 void _debug (char* fmt_string, ...) {
     va_list args;
     va_start (args, fmt_string);
@@ -63,6 +63,7 @@ void _debug (char* fmt_string, ...) {
 }
 #endif
 
+#ifndef NYX_MODE
 void _error (char* fmt_string, ...) {
     va_list args;
     va_start (args, fmt_string);
@@ -70,6 +71,7 @@ void _error (char* fmt_string, ...) {
     va_end (args);
     abort ();
 }
+#endif
 
 int max_fd = 0;
 int accept_block = 1;

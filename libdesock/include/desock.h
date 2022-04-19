@@ -26,14 +26,25 @@ If conns >= MAX_CONNS accept() will block
 extern sem_t sem;
 
 #ifdef DEBUG
+#ifdef NYX_MODE
+void hprintf(const char*, ...);
+#define DEBUG_LOG(...) hprintf(__VA_ARGS__);
+#else /* ! NYX_MODE */
 void _debug (char*, ...);
 #define DEBUG_LOG(...) _debug(__VA_ARGS__);
+#endif /* ! NYX_MODE */
 #else
 #define DEBUG_LOG(...)
 #endif
 
 void fill_sockaddr (int, struct sockaddr*, socklen_t*);
+
+#ifdef NYX_MODE
+void habort(const char*, ...);
+#define _error(...) habort(__VA_ARGS__);
+#else /* ! NYX_MODE */
 void _error (char*, ...);
+#endif /* ! NYX_MODE */
 
 struct fd_entry {
     /* information passed to socket() */
@@ -63,7 +74,13 @@ extern const struct sockaddr_un stub_sockaddr_un;
 
 #define VALID_FD(x) (0 <= (x) && (x) < FD_TABLE_SIZE)
 
-#define DESOCK_FD(x) (fd_table[(x)].domain == AF_INET || fd_table[(x)].domain == AF_INET6)
+#if DESOCK_PORT > 0
+#define DESOCK_FD(x, port)                                                                         \
+    ((fd_table[(x)].domain == AF_INET || fd_table[(x)].domain == AF_INET6) &&                      \
+     (port == htons(DESOCK_PORT)))
+#else
+#define DESOCK_FD(x, ...) (fd_table[(x)].domain == AF_INET || fd_table[(x)].domain == AF_INET6)
+#endif
 
 #ifdef DEBUG
 void clear_fd_table_entry(int);

@@ -32,6 +32,15 @@ if get_option('desock_server')
     args += '-D DESOCK_BIND'
 endif
 
+args += '-D DESOCK_PORT=@0@'.format(get_option('desock_port'))
+
+nyx_mode = get_option('nyx_mode')
+if nyx_mode == 'no_pt'
+    args += '-D NYX_MODE=1'
+elif nyx_mode == 'pt'
+    args += '-D NYX_MODE=2'
+endif
+
 libdesock_shared = shared_library('desock', 
     sources : [
         'libdesock/src/accept.c',
@@ -44,6 +53,7 @@ libdesock_shared = shared_library('desock',
         'libdesock/src/getpeername.c',
         'libdesock/src/getsockname.c',
         'libdesock/src/listen.c',
+        'libdesock/src/nyx.c',
         'libdesock/src/peekbuffer.c',
         'libdesock/src/poll.c',
         'libdesock/src/read.c',
@@ -79,6 +89,7 @@ static_library('desock',
         'libdesock/src/getpeername.c',
         'libdesock/src/getsockname.c',
         'libdesock/src/listen.c',
+        'libdesock/src/nyx.c',
         'libdesock/src/peekbuffer.c',
         'libdesock/src/poll.c',
         'libdesock/src/read.c',
@@ -142,6 +153,11 @@ exported_functions = [
     'sendmmsg',
     'writev'
 ]
+
+if nyx_mode != 'none'
+    exported_functions += 'call_vm'
+    exported_functions += 'nyx_init_start'
+endif
 
 strip_cmd = ['strip']
 

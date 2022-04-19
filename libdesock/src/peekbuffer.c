@@ -1,21 +1,21 @@
 #define _GNU_SOURCE
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
 #include <unistd.h>
 
 #include <desock.h>
-#include <syscall.h>
 #include <peekbuffer.h>
+#include <syscall.h>
+
+#ifdef NYX_MODE
+#include <nyx.h>
+#endif /* NYX_MODE */
 
 char static_buffer[STATIC_BUFFER_SIZE];
 
 peekbuffer_t peekbuffer = {
-    .buffer = static_buffer,
-    .start = 0,
-    .size = 0,
-    .capacity = STATIC_BUFFER_SIZE
-};
+    .buffer = static_buffer, .start = 0, .size = 0, .capacity = STATIC_BUFFER_SIZE};
 
 /*
 Round `size` up to the next power of 2.
@@ -69,7 +69,11 @@ int peekbuffer_read (size_t len) {
         return -1;
     }
 
+#ifdef NYX_MODE
+    int ret = handle_next_packet (peekbuffer.buffer + peekbuffer.start + peekbuffer.size, len);
+#else
     int ret = syscall_cp (SYS_read, 0, peekbuffer.buffer + peekbuffer.start + peekbuffer.size, len);
+#endif
 
     if (ret > 0) {
         peekbuffer.size += ret;
